@@ -1,0 +1,130 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Ant Colony Optimization for Image Edge Detection}
+\author{Automatically generated from aco\_edge.cpp}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document describes the Ant Colony Optimization (ACO) algorithm implemented in \texttt{aco\_edge.cpp} for image edge detection. The approach adapts the Max-Min Ant System (MMAS) variant of ACO, where artificial ants deposit pheromones biased by image gradients to reinforce edge trails. Key features include OpenMP parallelism, Sobel-inspired heuristics, and dynamic edge coloring.
+\end{abstract}
+
+\section{Introduction}
+Traditional edge detectors like Canny or Sobel use fixed gradient thresholds. Here, ACO treats edge detection as a graph optimization problem: pixels are nodes, ants seek high-gradient paths mimicking edge continuity.
+
+The image is converted to grayscale. A heuristic $\eta_{ij}$ (gradient magnitude) guides ants alongside pheromone $\tau_{ij}$. After $I=30$ iterations with $8000$ ants each performing $50$ steps, edges are pixels where $\tau_{ij}/\tau_{\max} \geq 0.35$.
+
+\section{Algorithm Description}
+
+\subsection{Preprocessing}
+\begin{enumerate}
+\item Convert RGB to grayscale: $g_{ij} = 0.299r + 0.587g + 0.114b$.
+\item Compute heuristic $\eta$ using 3x3 Sobel kernels:
+\[
+g_x = \sum_{dy=-1}^{1} \sum_{dx=-1}^{1} S_x(dy,dx) \cdot g_{i+dy,j+dx}, \quad
+g_y = \sum_{dy=-1}^{1} \sum_{dx=-1}^{1} S_y(dy,dx) \cdot g_{i+dy,j+dx}
+\]
+\[
+\eta_{ij} = \sqrt{g_x^2 + g_y^2} / \max(\eta) \in [0,1]
+\]
+where $S_x,S_y$ are Sobel kernels (3-pixel weighted).
+\item Initialize $\tau_{ij} = \tau_0 = 0.1$.
+\end{enumerate}
+
+\subsection{Ant Movement}
+Each ant starts at random pixel $(i,j)$. For $S=50$ steps:
+\begin{itemize}
+\item Compute move probabilities to 8 neighbors $(i',j')$:
+\[
+p_d \propto (\tau_{i'j'} + \epsilon)^\alpha \cdot (\eta_{i'j'} + \epsilon)^\beta
+\]
+(exclude out-of-bounds and 180° backtrack; $\epsilon=10^{-9}$).
+\item Roulette-wheel select direction $d$, move to $(i',j')$.
+\end{itemize}
+
+\subsection{Pheromone Update}
+\begin{itemize}
+\item Per ant: deposit along path $\Delta\tau_{i'j'} += Q \cdot \eta_{i'j'}$.
+\item Global: $\tau_{ij} \leftarrow (1-\rho)\tau_{ij} + \sum_{\text{ants}} \Delta\tau_{ij}$.
+\item Clamp: $\tau_{\min} \leq \tau_{ij} \leq \tau_{\max}$.
+\end{itemize}
+OpenMP parallelizes over ants (thread-local $\Delta\tau$).
+
+\subsection{Edge Extraction}
+Edges: $\tau_{ij}/\tau_{\max} \geq \theta=0.35$. Color by normalized intensity (blue$\to$purple$\to$pink$\to$cyan).
+
+\section{Pseudocode}
+
+\begin{algorithm}[H]
+\caption{ACO Edge Detection}
+\begin{algorithmic}[1]
+\REQUIRE Image $I$, parameters $\alpha,\beta,\rho,Q,\tau_{\min},\tau_{\max},\tau_0,I_{\max},N_{\text{ants}},S,\theta$
+\STATE Convert $I$ to grayscale $g$
+\STATE Compute $\eta_{ij}$ from $g$ using Sobel, normalize
+\STATE $\tau_{ij} \gets \tau_0 \quad \forall i,j$
+\FOR{$\text{iter} = 1$ \TO $I_{\max}$}
+    \STATE $\Delta\tau^{(t)} \gets 0 \quad \forall t$ \COMMENT{per thread}
+    \FOR{$\text{ant} = 1$ \TO $N_{\text{ants}}$} \COMMENT{OpenMP parallel for}
+        \STATE Sample start $(c_i,c_j)$ uniformly
+        \STATE $(l_i,l_j) \gets (-1,-1)$ \COMMENT{no backtrack}
+        \FOR{$\text{step} = 1$ \TO $S$}
+            \STATE Compute $\{p_d \propto (\tau^\alpha \eta^\beta)\}$ for valid 8 neighbors \COMMENT{no OOB/backtrack}
+            \STATE Select $d$ via roulette-wheel
+            \STATE $(n_i,n_j) \gets \clamp((c_i,c_j) + (dx_d,dy_d))$
+            \STATE $\Delta\tau^{(tid)}_{n_in_j} += Q \cdot \eta_{n_in_j}$
+            \STATE $(l_i,l_j) \gets (c_i,c_j)$; $(c_i,c_j) \gets (n_i,n_j)$
+        \ENDFOR
+    \ENDFOR
+    \FOR{all pixels $(i,j)$}
+        \STATE $\tau_{ij} \gets (1-\rho)\tau_{ij} + \sum_t \Delta\tau^{(t)}_{ij}$
+        \STATE $\tau_{ij} \gets \max(\tau_{\min}, \min(\tau_{\max}, \tau_{ij}))$
+    \ENDFOR
+\ENDFOR
+\STATE \RETURN Edges = $\{(i,j) \mid \tau_{ij}/\tau_{\max} \geq \theta \}$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Parameters}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lr@{}}
+\toprule
+Parameter & Value \\
+\midrule
+$\alpha$ (pheromone weight) & 1.8 \\
+$\beta$ (heuristic weight) & 1.2 \\
+$\rho$ (evaporation) & 0.1 \\
+$Q$ (deposit constant) & 1.0 \\
+$\tau_{\min}$ & 0.01 \\
+$\tau_{\max}$ & 9.0 \\
+$\tau_0$ & 0.1 \\
+$N_{\text{ants}}$ & 8000 \\
+$I_{\max}$ & 30 \\
+$S$ (steps/ant) & 50 \\
+$\theta$ (threshold) & 0.35 \\
+\bottomrule
+\end{tabular}
+\caption{ACO Parameters}
+\end{table}
+
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+\bibitem{mmas} T. Stützle and H. H. Hoos, ``MAX-MIN Ant System,'' Future Gener. Comput. Syst., vol. 16, no. 8, pp. 889–914, 2000.
+\bibitem{aco} M. Dorigo et al., ``Ant system: optimization by a colony of cooperating agents,'' IEEE Trans. Syst. Man Cybern. B, vol. 26, no. 1, pp. 29–41, 1996.
+\end{thebibliography}
+
+\end{document}
+

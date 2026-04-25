@@ -12,6 +12,7 @@
 #include <cstring>
 #include <ctime>
 #include <random>
+#include <windows.h> // For Sleep on Windows; use unistd.h and usleep on Unix-like systems
 #include <omp.h>
 #include <vector>
 #include <string>
@@ -27,8 +28,11 @@ static const float Q = 1.0f;
 static const float TAU_MIN = 0.01f;
 static const float TAU_MAX = 9.0f; // Max-Min limit to prevent pheromone spikes
 static const float TAU0 = 0.1f;
-static const int ANT_STEPS = 50;
+static const int ANT_STEPS = 30;
 static const float EDGE_THRESHOLD = 0.35f; // Threshold is relative to TAU_MAX
+static const float MIN_ETA = 0.05f;        // Ants die below this gradient
+
+#define max(a,b) (((a) > (b)) ? (a) : (b))
 
 static const int DX[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
 static const int DY[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
@@ -40,7 +44,7 @@ static inline int clamp(int v, int lo, int hi) {
 /* ── Image scaling ───────────────────────────────────────────── */
 static Tigr* resize_image(Tigr* src, int max_dim) {
     if (src->w <= max_dim && src->h <= max_dim) return src;
-    float scale = (float)max_dim / std::max(src->w, src->h);
+    float scale = (float)max_dim / max(src->w, src->h);
     int nw = (int)(src->w * scale);
     int nh = (int)(src->h * scale);
     Tigr* scaled = tigrBitmap(nw, nh);
@@ -60,35 +64,9 @@ static Tigr* resize_image(Tigr* src, int max_dim) {
 
 /* ── Color mapping ────────────────────────────────────────────── */
 static TPixel get_edge_color(float intensity, float threshold) {
-    float t = (intensity - threshold) / (1.0f - threshold);
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-
-    unsigned char r, g, b;
-
-    if (t < 0.33f) {
-        // Deep Blue → Purple
-        float f = t / 0.33f;
-        r = (unsigned char)(f * 120.f);
-        g = 0;
-        b = (unsigned char)(180.f + f * 75.f);
-    }
-    else if (t < 0.66f) {
-        // Purple → Neon Pink
-        float f = (t - 0.33f) / 0.33f;
-        r = (unsigned char)(120.f + f * 135.f);
-        g = (unsigned char)(f * 40.f);
-        b = (unsigned char)(255.f - f * 80.f);
-    }
-    else {
-        // Neon Pink → Cyan
-        float f = (t - 0.66f) / 0.34f;
-        r = (unsigned char)(255.f - f * 155.f);
-        g = (unsigned char)(40.f + f * 215.f);
-        b = (unsigned char)(175.f + f * 80.f);
-    }
-
-    return tigrRGB(r, g, b);
+    (void)intensity;
+    (void)threshold;
+    return tigrRGB(0, 255, 255);
 }
 
 /* ── ACO helpers ─────────────────────────────────────────────── */
@@ -122,6 +100,27 @@ static void build_heuristic(const std::vector<float>& gray, int w, int h, std::v
             eta[k] /= mx;
 }
 
+static void build_spawn_cdf(const std::vector<float>& eta, std::vector<float>& cdf) {
+    int N = (int)eta.size();
+    cdf.resize(N);
+    double sum = 0.0;
+    for (int i = 0; i < N; i++) {
+        sum += eta[i];
+        cdf[i] = (float)sum;
+    }
+    if (sum > 0.0) {
+        for (int i = 0; i < N; i++) {
+            cdf[i] /= (float)sum;
+        }
+    }
+}
+
+static int sample_from_cdf(const std::vector<float>& cdf, float u) {
+    int idx = (int)(std::upper_bound(cdf.begin(), cdf.end(), u) - cdf.begin());
+    if (idx >= (int)cdf.size()) idx = (int)cdf.size() - 1;
+    return idx;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <input_image>\n", argv[0]);
@@ -146,6 +145,9 @@ int main(int argc, char** argv) {
     to_gray(src, gray);
     build_heuristic(gray, w, h, eta);
 
+    std::vector<float> spawn_cdf;
+    build_spawn_cdf(eta, spawn_cdf);
+
     int nthreads = omp_get_max_threads();
     printf("OpenMP threads: %d\n", nthreads);
     std::vector<std::vector<float>> delta(nthreads, std::vector<float>(N, 0.f));
@@ -162,6 +164,11 @@ int main(int argc, char** argv) {
         }
     }
     tigrUpdate(screen);
+    #ifdef _WIN32
+        Sleep(500); // milliseconds — adjust as needed
+    #else
+        usleep(500000); // microseconds — 500000 = 0.5 seconds
+    #endif
 
     /* ── ACO iterations ─────────────────────────────────────── */
     for (int iter = 0; iter < NUM_ITERATIONS && !tigrClosed(screen); iter++) {
@@ -173,14 +180,14 @@ int main(int argc, char** argv) {
             int tid = omp_get_thread_num();
             std::mt19937 rng((unsigned)(time(nullptr) ^ ((ant + 1) * 2654435761u) ^
                                        ((tid + 1) * 2246822519u) ^ (iter * 3266489917u)));
-            std::uniform_int_distribution<int> hdist(0, h - 1);
-            std::uniform_int_distribution<int> wdist(0, w - 1);
             std::uniform_real_distribution<float> udist(0.0f, 1.0f);
             
-            int ci = hdist(rng), cj = wdist(rng);
+            int sidx = sample_from_cdf(spawn_cdf, udist(rng));
+            int ci = sidx / w, cj = sidx % w;
             int last_ni = -1, last_nj = -1; // To prevent immediate back-tracking
 
-            for (int step = 0; step < ANT_STEPS; step++) {
+            bool alive = true;
+            for (int step = 0; step < ANT_STEPS && alive; step++) {
                 float probs[8], total = 0.f;
                 int valid_moves = 0;
                 
@@ -223,8 +230,13 @@ int main(int argc, char** argv) {
                 int nj = clamp(cj + DY[chosen], 0, w - 1);
                 int nidx = ni * w + nj;
                 
-                // Deposit pheromones proportional to the gradient found!
-                delta[tid][nidx] += Q * eta[nidx];
+                // Early termination: kill ant if it wanders into flat region
+                if (eta[nidx] < MIN_ETA) {
+                    alive = false;
+                } else {
+                    // Deposit pheromones proportional to the gradient found!
+                    delta[tid][nidx] += Q * eta[nidx];
+                }
                 
                 last_ni = ci; 
                 last_nj = cj;

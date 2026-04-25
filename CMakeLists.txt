@@ -7,22 +7,30 @@ set(CMAKE_C_STANDARD 99)
 
 find_package(OpenMP REQUIRED)
 
-# Source files
-set(SOURCES
-    aco_edge.cpp
+# Common source files (shared across executables)
+set(COMMON_SOURCES
     tigr.c
 )
 
-# Create executable
-add_executable(aco_edge ${SOURCES})
+# ACO Edge executable
+add_executable(aco_edge aco_edge.cpp ${COMMON_SOURCES})
 
-# Window link libraries for TIGR
+# Sobel executable
+add_executable(sobel sobel.cpp ${COMMON_SOURCES})
+
+# No-edge executable
+add_executable(noedge noedge.cpp ${COMMON_SOURCES})
+
+# Platform-specific libraries
 if(WIN32)
-    target_link_libraries(aco_edge PRIVATE d3d9)
+    set(PLATFORM_LIBS d3d9)
 elseif(APPLE)
-    target_link_libraries(aco_edge PRIVATE "-framework OpenGL -framework Cocoa")
+    set(PLATFORM_LIBS "-framework OpenGL -framework Cocoa")
 else()
-    target_link_libraries(aco_edge PRIVATE GL X11)
+    set(PLATFORM_LIBS GL X11)
 endif()
 
-target_link_libraries(aco_edge PRIVATE OpenMP::OpenMP_CXX)
+# Link everything properly
+foreach(target aco_edge sobel noedge)
+    target_link_libraries(${target} PRIVATE ${PLATFORM_LIBS} OpenMP::OpenMP_CXX)
+endforeach()

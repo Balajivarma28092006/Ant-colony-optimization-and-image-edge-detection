@@ -3,7 +3,10 @@
  *
  * Usage:
  *   ./aco_edge <input_image>
- */
+ * 
+ * // 9nstead of using edge threshold try to use a mathematical function to map pheromone intensity to a color gradient for edges. This way, even sub-threshold edges can be visualized with a color that reflects their strength, rather than being completely invisible.
+    // also include only sobel operator based gradient in the heuristic, and ignore the pheromone for the heuristic (i.e. set alpha=0) to make it more visually intuitive and less prone to early stagnation. The pheromone will still guide the ants' movement, but the initial edge strength will be solely determined by the visual gradient, which should produce more visually appealing results.
+*/
 
 #include <algorithm>
 #include <cmath>
@@ -26,10 +29,10 @@ static const float BETA = 1.2f;   // Increased to emphasize visual gradient heav
 static const float RHO = 0.1f;
 static const float Q = 1.0f;
 static const float TAU_MIN = 0.01f;
-static const float TAU_MAX = 9.0f; // Max-Min limit to prevent pheromone spikes
+static const float TAU_MAX = 12.0f; // Max-Min limit to prevent pheromone spikes
 static const float TAU0 = 0.1f;
 static const int ANT_STEPS = 30;
-static const float EDGE_THRESHOLD = 0.35f; // Threshold is relative to TAU_MAX
+static const float EDGE_THRESHOLD = f; // Threshold is relative to TAU_MAX
 static const float MIN_ETA = 0.05f;        // Ants die below this gradient
 
 #define max(a,b) (((a) > (b)) ? (a) : (b))

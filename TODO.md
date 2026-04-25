@@ -6,7 +6,7 @@
 - [x] Add heuristic-biased spawning (ants start proportional to gradient)
 - [x] Add early termination for ants in flat regions (MIN_ETA threshold)
 - [x] Conditional pheromone deposit (only on edges)
-- [ ] Build and test
+- [x] Build and test
 
 ## Changes Summary
 
